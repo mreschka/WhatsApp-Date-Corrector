@@ -1,18 +1,18 @@
 <#
 .SYNOPSIS
-    Korrigiert die Zeitstempel von WhatsApp-Mediendateien basierend auf dem Dateinamen oder Metadaten.
+    Corrects the timestamps of WhatsApp media files based on metadata or filename.
 
 .DESCRIPTION
-    Das Skript durchsucht einen angegebenen Ordner und alle seine Unterordner nach Mediendateien.
-    Es prüft zuerst, ob eine Datei Metadaten wie "Aufnahmedatum" (für Fotos/Videos) oder "Medium erstellt" enthält.
-    Wenn ein gültiger Zeitstempel in den Metadaten gefunden wird, wird dieser bevorzugt verwendet.
+    The script searches a specified folder and all its subfolders for media files.
+    It first checks if a file contains metadata such as "Date taken" (for photos/videos) or "Media created".
+    If a valid timestamp is found in the metadata, it is used with preference.
     
-    Wenn keine Metadaten vorhanden sind, greift das Skript auf das WhatsApp-Muster im Dateinamen 
-    (z.B. IMG-20240115-WA0001.jpg) zurück, um das Datum zu extrahieren.
+    If no metadata is available, the script falls back to the WhatsApp pattern in the filename 
+    (e.g., IMG-20240115-WA0001.jpg) to extract the date.
     
-    Die Logik für eine Aktualisierung ist wie folgt:
-    1. Bei Metadaten-Quelle: Update, wenn CreationTime oder LastWriteTime nicht exakt mit dem Metadaten-Zeitstempel übereinstimmen.
-    2. Bei Dateinamen-Quelle: Update nur, wenn der *Datumsteil* von CreationTime oder LastWriteTime nicht mit dem Datum aus dem Dateinamen übereinstimmt.
+    The logic for an update is as follows:
+    1. For metadata source: Update if CreationTime or LastWriteTime do not exactly match the metadata timestamp.
+    2. For filename source: Update only if the *date part* of CreationTime or LastWriteTime does not match the date from the filename.
 
 .LICENSE
     MIT License
@@ -38,24 +38,24 @@
     SOFTWARE.
 
 .PARAMETER DirectoryPath
-    Der Pfad zum Startordner, der die WhatsApp-Dateien enthält.
+    The path to the starting folder containing the WhatsApp files.
 
 .PARAMETER DryRun
-    Wenn dieser Schalter auf $true gesetzt ist (Standard), werden keine Änderungen 
-    vorgenommen. Das Skript zeigt nur an, welche Dateien geändert würden.
-    Setzen Sie den Wert auf $false, um die Änderungen tatsächlich durchzuführen.
+    If this switch is set to $true (default), no changes will be made. 
+    The script will only show which files would be changed.
+    Set to $false to apply the changes.
 
 .PARAMETER DebugMetadata
-    Listet alle Metadaten-Eigenschaften der ersten gefundenen Datei auf und beendet sich.
-    Dient zum Finden der korrekten Index-Nummern für Metadaten.
+    Lists all metadata properties of the first file found and then exits.
+    Used to find the correct index numbers for metadata properties.
 
 .PARAMETER DebugParsing
-    Zeigt im normalen Lauf die rohen Zeichenketten der Metadaten-Datumsfelder an,
-    bevor versucht wird, sie zu parsen. Nützlich, wenn die Konvertierung fehlschlägt.
+    In a normal run, shows the raw string values of the metadata date fields 
+    before attempting to parse them. Useful if the conversion fails.
 
 .EXAMPLE
-    # Startet den Debug-Modus, um die Roh-Datumswerte aus den Metadaten anzuzeigen.
-    .\Korrektur-WhatsApp-Datum.ps1 -DirectoryPath "D:\WhatsApp Images" -DebugParsing
+    # Starts the debug mode to display the raw date values from metadata.
+    .\WhatsApp-Date-Corrector.ps1 -DirectoryPath "D:\WhatsApp Images" -DebugParsing
 #>
 param (
     [Parameter(Mandatory = $true)]
@@ -68,25 +68,25 @@ param (
     [switch]$DebugParsing
 )
 
-# --- Skript-Logik ---
+# --- Script Logic ---
 
 if (-not (Test-Path -Path $DirectoryPath -PathType Container)) {
-    Write-Error "Das angegebene Verzeichnis '$DirectoryPath' existiert nicht."
+    Write-Error "The specified directory '$DirectoryPath' does not exist."
     return
 }
 
-# --- DEBUG-MODUS: METADATEN-INDIZES FINDEN ---
+# --- DEBUG MODE: FIND METADATA INDICES ---
 if ($DebugMetadata) {
-    Write-Host "--- DEBUG-MODUS FÜR METADATEN GESTARTET ---" -ForegroundColor Magenta
+    Write-Host "--- METADATA DEBUG MODE STARTED ---" -ForegroundColor Magenta
     $firstFile = Get-ChildItem -Path $DirectoryPath -File -Recurse | Select-Object -First 1
-    if (-not $firstFile) { Write-Error "Keine Dateien im angegebenen Pfad gefunden."; return }
+    if (-not $firstFile) { Write-Error "No files found in the specified path."; return }
 
-    Write-Host "Analysiere Metadaten für die Datei: $($firstFile.FullName)`n"
+    Write-Host "Analyzing metadata for file: $($firstFile.FullName)`n"
     $shell = New-Object -ComObject Shell.Application
     $folder = $shell.Namespace($firstFile.DirectoryName)
     $fileItem = $folder.ParseName($firstFile.Name)
 
-    Write-Host "Index | Eigenschaftsname       | Wert"
+    Write-Host "Index | Property Name        | Value"
     Write-Host "--------------------------------------------------"
     0..400 | ForEach-Object {
         $propName = $folder.GetDetailsOf($null, $_)
@@ -95,29 +95,29 @@ if ($DebugMetadata) {
             Write-Host ("{0,5} | {1,-20} | {2}" -f $_, $propName, $propValue)
         }
     }
-    Write-Host "`n--- DEBUG-MODUS BEENDET ---" -ForegroundColor Magenta
+    Write-Host "`n--- DEBUG MODE FINISHED ---" -ForegroundColor Magenta
     return
 }
 
-# --- NORMALER MODUS ---
+# --- NORMAL MODE ---
 
-# Konfiguration
+# Configuration
 $regexPattern = '^[A-Za-z]{3}-(\d{4})(\d{2})(\d{2})-WA(\d{4})\..+$'
 $baseTime = [timespan]"10:00:00"
-$dateTakenIndex = 12      # "Aufnahmedatum"
-$mediaCreatedIndex = 208  # "Medium erstellt"
+$dateTakenIndex = 12      # "Date taken"
+$mediaCreatedIndex = 208  # "Media created"
 $expectedDateFormat = 'dd.MM.yyyy HH:mm'
 
 if ($DryRun -and !$DebugParsing) {
-    Write-Host "--- TESTLAUF (DRY RUN) GESTARTET ---" -ForegroundColor Yellow
-    Write-Host "Es werden keine Dateien geändert. Die Aktionen werden nur simuliert." -ForegroundColor Yellow
+    Write-Host "--- DRY RUN STARTED ---" -ForegroundColor Yellow
+    Write-Host "No files will be changed. Actions are only simulated." -ForegroundColor Yellow
 } elseif ($DebugParsing) {
-    Write-Host "--- PARSING-DEBUG-MODUS GESTARTET ---" -ForegroundColor Yellow
+    Write-Host "--- PARSING DEBUG MODE STARTED ---" -ForegroundColor Yellow
 } else {
-    Write-Host "--- ECHTLAUF GESTARTET ---" -ForegroundColor Red
-    Write-Host "WARNUNG: Die Zeitstempel der Dateien werden jetzt dauerhaft geändert." -ForegroundColor Red
+    Write-Host "--- LIVE RUN STARTED ---" -ForegroundColor Red
+    Write-Host "WARNING: File timestamps will now be permanently changed." -ForegroundColor Red
 }
-Write-Host "Durchsuche rekursiv Ordner: $DirectoryPath`n"
+Write-Host "Recursively searching folder: $DirectoryPath`n"
 
 $shell = New-Object -ComObject Shell.Application
 $cachedFolders = @{}
@@ -128,7 +128,7 @@ foreach ($file in $files) {
     $newTimestamp = $null
     $updateReason = ""
 
-    # SCHRITT 1: Metadaten lesen
+    # STEP 1: Read metadata
     $parentDir = $file.DirectoryName
     if (-not $cachedFolders.ContainsKey($parentDir)) { $cachedFolders[$parentDir] = $shell.Namespace($parentDir) }
     $folder = $cachedFolders[$parentDir]
@@ -139,8 +139,8 @@ foreach ($file in $files) {
         $mediaCreatedStr = $folder.GetDetailsOf($fileItem, $mediaCreatedIndex)
 
         if ($DebugParsing) {
-            if ($dateTakenStr) { Write-Host "DEBUG [$($file.Name)]: Rohwert für 'Aufnahmedatum' ($dateTakenIndex): '$dateTakenStr'" -ForegroundColor Gray }
-            if ($mediaCreatedStr) { Write-Host "DEBUG [$($file.Name)]: Rohwert für 'Medium erstellt' ($mediaCreatedIndex): '$mediaCreatedStr'" -ForegroundColor Gray }
+            if ($dateTakenStr) { Write-Host "DEBUG [$($file.Name)]: Raw value for 'Date taken' ($dateTakenIndex): '$dateTakenStr'" -ForegroundColor Gray }
+            if ($mediaCreatedStr) { Write-Host "DEBUG [$($file.Name)]: Raw value for 'Media created' ($mediaCreatedIndex): '$mediaCreatedStr'" -ForegroundColor Gray }
         }
         
         function Parse-MetadataDate($rawString, $format) {
@@ -154,33 +154,33 @@ foreach ($file in $files) {
         $newTimestamp = Parse-MetadataDate -rawString $dateTakenStr -format $expectedDateFormat
         if (-not $newTimestamp) { $newTimestamp = Parse-MetadataDate -rawString $mediaCreatedStr -format $expectedDateFormat }
 
-        if ($newTimestamp) { $updateReason = "Metadaten" }
+        if ($newTimestamp) { $updateReason = "Metadata" }
     }
     
-    # SCHRITT 2: Fallback auf Dateinamen
+    # STEP 2: Fallback to filename
     if (-not $newTimestamp -and $file.Name -match $regexPattern) {
         $year, $month, $day, $sequenceNumber = $matches[1], $matches[2], $matches[3], [int]$matches[4]
         try {
             $targetDate = Get-Date -Year $year -Month $month -Day $day -Hour 0 -Minute 0 -Second 0 -ErrorAction Stop
             $newTimestamp = $targetDate + $baseTime + ([timespan]::FromMinutes($sequenceNumber))
-            $updateReason = "Dateiname"
+            $updateReason = "Filename"
         } catch {
-            Write-Warning "($($file.FullName)) - Ungültiges Datum im Namen. Wird übersprungen."
+            Write-Warning "($($file.FullName)) - Invalid date in filename. Skipping."
             continue
         }
     }
 
-    # SCHRITT 3: Aktion entscheiden (verfeinerte Logik)
+    # STEP 3: Decide action (refined logic)
     if (-not $newTimestamp) { continue }
 
     $needsUpdate = $false
-    if ($updateReason -eq 'Metadaten') {
-        # Bei Metadaten ist die Uhrzeit präzise. Update, wenn entweder CreationTime oder LastWriteTime nicht exakt übereinstimmt.
+    if ($updateReason -eq 'Metadata') {
+        # With metadata, the time is precise. Update if either CreationTime or LastWriteTime does not match exactly.
         if ($file.CreationTime -ne $newTimestamp -or $file.LastWriteTime -ne $newTimestamp) {
             $needsUpdate = $true
         }
-    } else { # $updateReason -eq 'Dateiname'
-        # Beim Dateinamen haben wir eine Dummy-Uhrzeit. Update nur, wenn der Tag bei einem der beiden Zeitstempel falsch ist.
+    } else { # $updateReason -eq 'Filename'
+        # With the filename, we have a dummy time. Update only if the day is wrong for either timestamp.
         $targetDateStr = $newTimestamp.ToString('yyyy-MM-dd')
         if ($file.CreationTime.ToString('yyyy-MM-dd') -ne $targetDateStr -or $file.LastWriteTime.ToString('yyyy-MM-dd') -ne $targetDateStr) {
             $needsUpdate = $true
@@ -188,26 +188,24 @@ foreach ($file in $files) {
     }
 
     if (-not $needsUpdate) {
-        Write-Host "($($file.FullName)) - Korrekte Zeitstempel gefunden (Quelle: $updateReason). Wird übersprungen." -ForegroundColor Gray
+        Write-Host "($($file.FullName)) - Correct timestamps found (Source: $updateReason). Skipping." -ForegroundColor Gray
         continue
     }
     
-    # SCHRITT 4: Aktion durchführen
-    $logMessage = "($($file.FullName)) | Quelle: $updateReason | Aktuell (C/W): $($file.CreationTime.ToString('yyyy-MM-dd HH:mm')) / $($file.LastWriteTime.ToString('yyyy-MM-dd HH:mm')) | Neu: $($newTimestamp.ToString('yyyy-MM-dd HH:mm'))"
+    # STEP 4: Perform action
+    $logMessage = "($($file.FullName)) | Source: $updateReason | Current (C/W): $($file.CreationTime.ToString('yyyy-MM-dd HH:mm')) / $($file.LastWriteTime.ToString('yyyy-MM-dd HH:mm')) | New: $($newTimestamp.ToString('yyyy-MM-dd HH:mm'))"
     
     if ($DryRun -or $DebugParsing) {
-        Write-Host "[TEST] Würde ändern: $logMessage" -ForegroundColor Cyan
+        Write-Host "[DRY RUN] Would change: $logMessage" -ForegroundColor Cyan
     } else {
         try {
             Set-ItemProperty -Path $file.FullName -Name LastWriteTime -Value $newTimestamp -ErrorAction Stop
             Set-ItemProperty -Path $file.FullName -Name CreationTime -Value $newTimestamp -ErrorAction Stop
-            Write-Host "GEÄNDERT: $logMessage" -ForegroundColor Green
+            Write-Host "CHANGED: $logMessage" -ForegroundColor Green
         } catch {
-            Write-Error "Fehler beim Ändern der Datei $($file.FullName): $_"
+            Write-Error "Error while modifying file $($file.FullName): $_"
         }
     }
 }
 
-Write-Host "`n--- VERARBEITUNG ABGESCHLOSSEN ---"
-
-
+Write-Host "`n--- PROCESSING COMPLETE ---"
