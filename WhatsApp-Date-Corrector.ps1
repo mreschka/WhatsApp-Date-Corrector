@@ -12,7 +12,8 @@
     
     The logic for an update is as follows:
     1. For metadata source: Update if CreationTime or LastWriteTime do not exactly match the metadata timestamp.
-    2. For filename source: Update only if the *date part* of CreationTime or LastWriteTime does not match the date from the filename.
+    2. For filename source: Update only the specific timestamp (CreationTime or LastWriteTime) if its *date part* is incorrect.
+       If one timestamp has the correct date, its time will be used to correct the other. The generated dummy time is only used if both timestamps have an incorrect date.
 
 .LICENSE
     MIT License
@@ -29,7 +30,7 @@
     The above copyright notice and this permission notice shall be included in all
     copies or substantial portions of the Software.
     
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY, EXPRESS OR
     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
     AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
@@ -84,7 +85,7 @@ if ($DebugMetadata) {
     Write-Host "Analyzing metadata for file: $($firstFile.FullName)`n"
     $shell = New-Object -ComObject Shell.Application
     $folder = $shell.Namespace($firstFile.DirectoryName)
-    $fileItem = $folder.ParseName($firstFile.Name)
+    $fileItem = $folder.ParseName($file.Name)
 
     Write-Host "Index | Property Name        | Value"
     Write-Host "--------------------------------------------------"
@@ -170,38 +171,59 @@ foreach ($file in $files) {
         }
     }
 
-    # STEP 3: Decide action (refined logic)
+    # STEP 3: Decide action (intelligently reusing time)
     if (-not $newTimestamp) { continue }
 
-    $needsUpdate = $false
+    $targetCreationTime = $null
+    $targetLastWriteTime = $null
+
     if ($updateReason -eq 'Metadata') {
-        # With metadata, the time is precise. Update if either CreationTime or LastWriteTime does not match exactly.
-        if ($file.CreationTime -ne $newTimestamp -or $file.LastWriteTime -ne $newTimestamp) {
-            $needsUpdate = $true
-        }
+        # With metadata, the time is precise. Both timestamps should be set to this exact value if they differ.
+        if ($file.CreationTime -ne $newTimestamp) { $targetCreationTime = $newTimestamp }
+        if ($file.LastWriteTime -ne $newTimestamp) { $targetLastWriteTime = $newTimestamp }
     } else { # $updateReason -eq 'Filename'
-        # With the filename, we have a dummy time. Update only if the day is wrong for either timestamp.
-        $targetDateStr = $newTimestamp.ToString('yyyy-MM-dd')
-        if ($file.CreationTime.ToString('yyyy-MM-dd') -ne $targetDateStr -or $file.LastWriteTime.ToString('yyyy-MM-dd') -ne $targetDateStr) {
-            $needsUpdate = $true
+        # With the filename, we have a dummy time. We want to preserve a correct time if one of the timestamps has the correct date.
+        $targetDate = $newTimestamp.Date
+        $isCreationDateCorrect = ($file.CreationTime.Date -eq $targetDate)
+        $isLastWriteDateCorrect = ($file.LastWriteTime.Date -eq $targetDate)
+
+        if ($isCreationDateCorrect -and $isLastWriteDateCorrect) {
+            # Both dates are correct, nothing to do.
+        } elseif ($isCreationDateCorrect) {
+            # Creation date is correct, use its time for LastWriteTime if its date is wrong.
+            $targetLastWriteTime = $targetDate + $file.CreationTime.TimeOfDay
+        } elseif ($isLastWriteDateCorrect) {
+            # LastWrite date is correct, use its time for CreationTime if its date is wrong.
+            $targetCreationTime = $targetDate + $file.LastWriteTime.TimeOfDay
+        } else {
+            # Both dates are wrong, use the generated dummy time for both.
+            $targetCreationTime = $newTimestamp
+            $targetLastWriteTime = $newTimestamp
         }
     }
 
-    if (-not $needsUpdate) {
+    if (-not $targetCreationTime -and -not $targetLastWriteTime) {
         Write-Host "($($file.FullName)) - Correct timestamps found (Source: $updateReason). Skipping." -ForegroundColor Gray
         continue
     }
     
     # STEP 4: Perform action
-    $logMessage = "($($file.FullName)) | Source: $updateReason | Current (C/W): $($file.CreationTime.ToString('yyyy-MM-dd HH:mm')) / $($file.LastWriteTime.ToString('yyyy-MM-dd HH:mm')) | New: $($newTimestamp.ToString('yyyy-MM-dd HH:mm'))"
-    
     if ($DryRun -or $DebugParsing) {
-        Write-Host "[DRY RUN] Would change: $logMessage" -ForegroundColor Cyan
+        $logMessage = "($($file.FullName)) | Source: $updateReason | Current (C/W): $($file.CreationTime.ToString('yyyy-MM-dd HH:mm')) / $($file.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))"
+        $newCreationTimeStr = if ($targetCreationTime) { $targetCreationTime.ToString('yyyy-MM-dd HH:mm') } else { '---' }
+        $newLastWriteTimeStr = if ($targetLastWriteTime) { $targetLastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { '---' }
+        Write-Host "[DRY RUN] Would change: $logMessage | New (C/W): $newCreationTimeStr / $newLastWriteTimeStr" -ForegroundColor Cyan
     } else {
         try {
-            Set-ItemProperty -Path $file.FullName -Name LastWriteTime -Value $newTimestamp -ErrorAction Stop
-            Set-ItemProperty -Path $file.FullName -Name CreationTime -Value $newTimestamp -ErrorAction Stop
-            Write-Host "CHANGED: $logMessage" -ForegroundColor Green
+            if ($targetCreationTime) {
+                Set-ItemProperty -Path $file.FullName -Name CreationTime -Value $targetCreationTime -ErrorAction Stop
+            }
+            if ($targetLastWriteTime) {
+                Set-ItemProperty -Path $file.FullName -Name LastWriteTime -Value $targetLastWriteTime -ErrorAction Stop
+            }
+            $finalCreationTime = if ($targetCreationTime) { $targetCreationTime } else { $file.CreationTime }
+            $finalLastWriteTime = if ($targetLastWriteTime) { $targetLastWriteTime } else { $file.LastWriteTime }
+            Write-Host "CHANGED: ($($file.FullName)) | New (C/W): $($finalCreationTime.ToString('yyyy-MM-dd HH:mm')) / $($finalLastWriteTime.ToString('yyyy-MM-dd HH:mm'))" -ForegroundColor Green
         } catch {
             Write-Error "Error while modifying file $($file.FullName): $_"
         }
@@ -209,3 +231,4 @@ foreach ($file in $files) {
 }
 
 Write-Host "`n--- PROCESSING COMPLETE ---"
+
